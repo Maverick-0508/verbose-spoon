@@ -1,5 +1,6 @@
 import {
   calculateSprints,
+  calculateMilestoneSchedule,
   formatDateDisplay,
   formatDateShort,
   US_HOLIDAYS_2024_2026,
@@ -51,6 +52,13 @@ export default function GanttTimeline({ project, milestones, settings }) {
         holidays
       )
     : [];
+
+  const milestoneSchedule = calculateMilestoneSchedule(
+    project.startDate,
+    milestones,
+    holidays,
+    settings.includeWeekends
+  );
 
   const today = new Date();
   today.setHours(0, 0, 0, 0);
@@ -173,11 +181,10 @@ export default function GanttTimeline({ project, milestones, settings }) {
         {milestones.length > 0 && (
           <>
             <div className="gantt-section-label">Milestones</div>
-            {[...milestones]
-              .sort((a, b) => new Date(a.date) - new Date(b.date))
+            {milestoneSchedule.scheduledMilestones
               .map((milestone) => {
                 const pos = getPositionPercent(
-                  milestone.date,
+                  milestone.scheduledEnd,
                   project.startDate,
                   project.endDate
                 );
@@ -186,18 +193,19 @@ export default function GanttTimeline({ project, milestones, settings }) {
                     <div className="gantt-label-col">
                       <span className="gantt-row-label">
                         {milestone.icon} {milestone.name}
+                        {milestone.isCritical ? ' • CP' : ''}
                       </span>
                     </div>
                     <div className="gantt-timeline-col">
                       <div className="gantt-bar-track">
                         <div
-                          className={`gantt-milestone ${milestone.completed ? 'gantt-milestone-done' : ''}`}
+                          className={`gantt-milestone ${milestone.completed ? 'gantt-milestone-done' : ''} ${milestone.isCritical ? 'gantt-milestone-critical' : ''}`}
                           style={{ left: `${pos}%` }}
-                          title={`${milestone.name}: ${milestone.date}`}
+                          title={`${milestone.name}: ${milestone.scheduledStart} → ${milestone.scheduledEnd}`}
                         >
                           <div className="gantt-milestone-diamond" />
                           <span className="gantt-milestone-label">
-                            {formatDateShort(milestone.date)}
+                            {formatDateShort(milestone.scheduledEnd)}
                           </span>
                         </div>
                       </div>
@@ -208,6 +216,19 @@ export default function GanttTimeline({ project, milestones, settings }) {
           </>
         )}
       </div>
+
+      {milestones.length > 0 && (
+        <div className="sprint-table-section">
+          <h3 className="section-title">Dependency Analysis</h3>
+          {milestoneSchedule.hasCycle ? (
+            <p className="card-subtitle">Dependency cycle detected. Critical path unavailable until cycle is resolved.</p>
+          ) : (
+            <p className="card-subtitle">
+              Critical Path: {milestoneSchedule.criticalPathIds.length} milestone{milestoneSchedule.criticalPathIds.length !== 1 ? 's' : ''}
+            </p>
+          )}
+        </div>
+      )}
 
       {/* Sprint Summary Table */}
       {settings.sprintMode && sprints.length > 0 && (
