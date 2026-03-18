@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { calculateMilestoneSchedule, US_HOLIDAYS_2024_2026 } from '../utils/dateUtils';
 
 const MILESTONE_COLORS = [
   '#6366f1', '#8b5cf6', '#ec4899', '#f97316', '#10b981',
@@ -7,11 +8,13 @@ const MILESTONE_COLORS = [
 
 const MILESTONE_ICONS = ['🎯', '🏆', '📋', '🔑', '⭐', '🚀', '✅', '📌', '🔥', '💡'];
 
-export default function MilestonesManager({ milestones, project, onUpdate }) {
+export default function MilestonesManager({ milestones, project, settings, onUpdate }) {
   const [isAdding, setIsAdding] = useState(false);
   const [newMilestone, setNewMilestone] = useState({
     name: '',
     date: '',
+    durationDays: 1,
+    dependsOn: [],
     description: '',
     color: MILESTONE_COLORS[0],
     icon: MILESTONE_ICONS[0],
@@ -21,7 +24,7 @@ export default function MilestonesManager({ milestones, project, onUpdate }) {
   // holidays variable reserved for future use with working day calculation in milestones
 
   const addMilestone = () => {
-    if (!newMilestone.name || !newMilestone.date) return;
+    if (!newMilestone.name) return;
     const milestone = {
       ...newMilestone,
       id: Date.now(),
@@ -32,6 +35,8 @@ export default function MilestonesManager({ milestones, project, onUpdate }) {
     setNewMilestone({
       name: '',
       date: '',
+      durationDays: 1,
+      dependsOn: [],
       description: '',
       color: MILESTONE_COLORS[(milestones.length + 1) % MILESTONE_COLORS.length],
       icon: MILESTONE_ICONS[(milestones.length + 1) % MILESTONE_ICONS.length],
@@ -41,14 +46,48 @@ export default function MilestonesManager({ milestones, project, onUpdate }) {
   };
 
   const removeMilestone = (id) => {
-    onUpdate(milestones.filter((m) => m.id !== id));
+    onUpdate(
+      milestones
+        .filter((m) => m.id !== id)
+        .map((m) => ({
+          ...m,
+          dependsOn: Array.isArray(m.dependsOn)
+            ? m.dependsOn.filter((depId) => depId !== id)
+            : [],
+        }))
+    );
   };
 
   const toggleComplete = (id) => {
     onUpdate(milestones.map((m) => (m.id === id ? { ...m, completed: !m.completed } : m)));
   };
 
-  const sortedMilestones = [...milestones].sort((a, b) => new Date(a.date) - new Date(b.date));
+  const holidays = [
+    ...(settings?.useUSHolidays ? US_HOLIDAYS_2024_2026 : []),
+    ...((settings?.customHolidays || []).map((h) => h.date)),
+  ];
+
+  const schedule = calculateMilestoneSchedule(
+    project.startDate,
+    milestones,
+    holidays,
+    settings?.includeWeekends
+  );
+
+  const scheduledById = new Map(schedule.scheduledMilestones.map((m) => [m.id, m]));
+  const sortedMilestones = [...milestones].sort((a, b) => {
+    const aDate = scheduledById.get(a.id)?.scheduledStart || a.date || project.startDate;
+    const bDate = scheduledById.get(b.id)?.scheduledStart || b.date || project.startDate;
+    return new Date(aDate) - new Date(bDate);
+  });
+
+  const toggleDependency = (id) => {
+    const current = Array.isArray(newMilestone.dependsOn) ? newMilestone.dependsOn : [];
+    const next = current.includes(id)
+      ? current.filter((depId) => depId !== id)
+      : [...current, id];
+    setNewMilestone({ ...newMilestone, dependsOn: next });
+  };
 
   return (
     <div className="card milestones-card">
@@ -83,7 +122,7 @@ export default function MilestonesManager({ milestones, project, onUpdate }) {
               />
             </div>
             <div className="form-group">
-              <label className="form-label">Target Date *</label>
+              <label className="form-label">Base Date</label>
               <input
                 type="date"
                 className="form-input"
@@ -91,6 +130,21 @@ export default function MilestonesManager({ milestones, project, onUpdate }) {
                 min={project.startDate}
                 max={project.endDate}
                 onChange={(e) => setNewMilestone({ ...newMilestone, date: e.target.value })}
+              />
+            </div>
+            <div className="form-group">
+              <label className="form-label">Duration (working days)</label>
+              <input
+                type="number"
+                min="1"
+                className="form-input"
+                value={newMilestone.durationDays}
+                onChange={(e) =>
+                  setNewMilestone({
+                    ...newMilestone,
+                    durationDays: Math.max(1, Number(e.target.value) || 1),
+                  })
+                }
               />
             </div>
             <div className="form-group full-width">
@@ -105,6 +159,26 @@ export default function MilestonesManager({ milestones, project, onUpdate }) {
                 }
               />
             </div>
+            {milestones.length > 0 && (
+              <div className="form-group full-width">
+                <label className="form-label">Dependencies</label>
+                <div className="icon-picker">
+                  {milestones.map((m) => {
+                    const selected = (newMilestone.dependsOn || []).includes(m.id);
+                    return (
+                      <button
+                        key={m.id}
+                        className={`icon-btn ${selected ? 'icon-btn-active' : ''}`}
+                        onClick={() => toggleDependency(m.id)}
+                        title={m.name}
+                      >
+                        {m.icon} {m.name}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
             <div className="form-group full-width">
               <label className="form-label">Icon</label>
               <div className="icon-picker">
@@ -130,11 +204,18 @@ export default function MilestonesManager({ milestones, project, onUpdate }) {
             <button
               className="btn btn-primary"
               onClick={addMilestone}
-              disabled={!newMilestone.name || !newMilestone.date}
+              disabled={!newMilestone.name}
             >
               Add Milestone
             </button>
           </div>
+        </div>
+      )}
+
+      {schedule.hasCycle && (
+        <div className="empty-state" style={{ marginTop: '1rem' }}>
+          <p className="empty-title">Dependency cycle detected</p>
+          <p className="empty-desc">A milestone depends on itself through a chain. Adjust dependencies to restore critical path calculation.</p>
         </div>
       )}
 
@@ -147,11 +228,16 @@ export default function MilestonesManager({ milestones, project, onUpdate }) {
       ) : (
         <div className="milestones-list">
           {sortedMilestones.map((milestone, idx) => {
+            const scheduled = scheduledById.get(milestone.id);
+            const activeDate = scheduled?.scheduledEnd || milestone.date || project.startDate;
             const today = new Date();
-            const mDate = new Date(milestone.date);
+            const mDate = new Date(activeDate);
             const daysLeft = Math.ceil((mDate - today) / (1000 * 60 * 60 * 24));
             const isOverdue = daysLeft < 0 && !milestone.completed;
             const isUpcoming = daysLeft >= 0 && daysLeft <= 7 && !milestone.completed;
+            const dependencyNames = (milestone.dependsOn || [])
+              .map((depId) => milestones.find((m) => m.id === depId)?.name)
+              .filter(Boolean);
 
             return (
               <div
@@ -182,9 +268,20 @@ export default function MilestonesManager({ milestones, project, onUpdate }) {
                       {milestone.description && (
                         <span className="milestone-desc">{milestone.description}</span>
                       )}
+                      <span className="milestone-desc">
+                        {Math.max(1, Number(milestone.durationDays) || 1)}d duration
+                        {dependencyNames.length > 0
+                          ? ` • depends on: ${dependencyNames.join(', ')}`
+                          : ''}
+                      </span>
+                      {scheduled && (
+                        <span className="milestone-desc">
+                          Scheduled: {scheduled.scheduledStart} → {scheduled.scheduledEnd}
+                        </span>
+                      )}
                     </div>
                     <div className="milestone-meta">
-                      <span className="milestone-date">{milestone.date}</span>
+                      <span className="milestone-date">{activeDate}</span>
                       {!milestone.completed && (
                         <span className={`milestone-badge ${isOverdue ? 'badge-overdue' : isUpcoming ? 'badge-soon' : 'badge-normal'}`}>
                           {isOverdue
@@ -196,6 +293,9 @@ export default function MilestonesManager({ milestones, project, onUpdate }) {
                       )}
                       {milestone.completed && (
                         <span className="milestone-badge badge-done">Done ✓</span>
+                      )}
+                      {scheduled?.isCritical && (
+                        <span className="milestone-badge badge-soon">Critical Path</span>
                       )}
                     </div>
                     <button
