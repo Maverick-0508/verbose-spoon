@@ -278,3 +278,171 @@ export function getWeekNumber(date) {
   const yearStart = new Date(d.getFullYear(), 0, 1);
   return Math.ceil(((d - yearStart) / 86400000 + 1) / 7);
 }
+
+function normalizeToWorkingDay(date, holidays = [], includeWeekends = false) {
+  const d = new Date(date);
+  d.setHours(0, 0, 0, 0);
+
+  while (!isWorkingDay(d, holidays, includeWeekends)) {
+    d.setDate(d.getDate() + 1);
+  }
+
+  return d;
+}
+
+function addDurationFromStart(startDate, durationDays, holidays = [], includeWeekends = false) {
+  const safeDuration = Math.max(1, Number(durationDays) || 1);
+  if (safeDuration === 1) {
+    return new Date(startDate);
+  }
+  return addWorkingDays(startDate, safeDuration - 1, holidays, includeWeekends);
+}
+
+export function calculateMilestoneSchedule(
+  projectStartDate,
+  milestones,
+  holidays = [],
+  includeWeekends = false
+) {
+  const nodes = milestones.map((milestone) => ({
+    ...milestone,
+    durationDays: Math.max(1, Number(milestone.durationDays) || 1),
+    dependsOn: Array.isArray(milestone.dependsOn) ? milestone.dependsOn : [],
+  }));
+
+  const nodeMap = new Map(nodes.map((node) => [node.id, node]));
+  const dependentsMap = new Map();
+  const indegree = new Map(nodes.map((node) => [node.id, 0]));
+
+  nodes.forEach((node) => {
+    dependentsMap.set(node.id, []);
+  });
+
+  nodes.forEach((node) => {
+    const validDeps = node.dependsOn
+      .filter((depId) => depId !== node.id)
+      .filter((depId) => nodeMap.has(depId));
+
+    node.dependsOn = validDeps;
+    indegree.set(node.id, validDeps.length);
+
+    validDeps.forEach((depId) => {
+      dependentsMap.get(depId).push(node.id);
+    });
+  });
+
+  const queue = [];
+  indegree.forEach((value, id) => {
+    if (value === 0) queue.push(id);
+  });
+
+  const topoOrder = [];
+  while (queue.length > 0) {
+    const id = queue.shift();
+    topoOrder.push(id);
+    const dependents = dependentsMap.get(id) || [];
+    dependents.forEach((dependentId) => {
+      const next = indegree.get(dependentId) - 1;
+      indegree.set(dependentId, next);
+      if (next === 0) queue.push(dependentId);
+    });
+  }
+
+  const hasCycle = topoOrder.length !== nodes.length;
+
+  if (hasCycle) {
+    return {
+      hasCycle: true,
+      criticalPathIds: [],
+      scheduledMilestones: nodes.map((node) => {
+        const fallbackDate = node.date || projectStartDate;
+        const start = normalizeToWorkingDay(fallbackDate, holidays, includeWeekends);
+        const end = addDurationFromStart(start, node.durationDays, holidays, includeWeekends);
+        return {
+          ...node,
+          scheduledStart: formatDateISO(start),
+          scheduledEnd: formatDateISO(end),
+          isCritical: false,
+        };
+      }),
+    };
+  }
+
+  const scheduledMap = new Map();
+  const pathDistance = new Map();
+  const predecessor = new Map();
+
+  topoOrder.forEach((id) => {
+    const node = nodeMap.get(id);
+    const startCandidates = [];
+
+    const baseDate = node.date || projectStartDate;
+    startCandidates.push(normalizeToWorkingDay(baseDate, holidays, includeWeekends));
+
+    node.dependsOn.forEach((depId) => {
+      const dep = scheduledMap.get(depId);
+      const depNextStart = addWorkingDays(dep.end, 1, holidays, includeWeekends);
+      startCandidates.push(depNextStart);
+    });
+
+    const start = startCandidates.reduce((maxDate, current) => {
+      return current > maxDate ? current : maxDate;
+    });
+
+    const end = addDurationFromStart(start, node.durationDays, holidays, includeWeekends);
+
+    let bestPredecessor = null;
+    let bestDistance = 0;
+    node.dependsOn.forEach((depId) => {
+      const depDistance = pathDistance.get(depId) || 0;
+      if (depDistance > bestDistance) {
+        bestDistance = depDistance;
+        bestPredecessor = depId;
+      }
+    });
+
+    pathDistance.set(id, bestDistance + node.durationDays);
+    predecessor.set(id, bestPredecessor);
+    scheduledMap.set(id, {
+      ...node,
+      start,
+      end,
+    });
+  });
+
+  let criticalEndId = null;
+  let criticalDistance = -1;
+
+  pathDistance.forEach((distance, id) => {
+    if (distance > criticalDistance) {
+      criticalDistance = distance;
+      criticalEndId = id;
+    }
+  });
+
+  const criticalPathIds = [];
+  let current = criticalEndId;
+  while (current) {
+    criticalPathIds.unshift(current);
+    current = predecessor.get(current) || null;
+  }
+
+  const criticalSet = new Set(criticalPathIds);
+  const scheduledMilestones = nodes
+    .map((node) => {
+      const scheduled = scheduledMap.get(node.id);
+      return {
+        ...node,
+        scheduledStart: formatDateISO(scheduled.start),
+        scheduledEnd: formatDateISO(scheduled.end),
+        isCritical: criticalSet.has(node.id),
+      };
+    })
+    .sort((a, b) => new Date(a.scheduledStart) - new Date(b.scheduledStart));
+
+  return {
+    hasCycle: false,
+    criticalPathIds,
+    scheduledMilestones,
+  };
+}
