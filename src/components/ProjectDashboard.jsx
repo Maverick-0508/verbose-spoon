@@ -1,5 +1,6 @@
 import {
   countWorkingDays,
+  calculateMilestoneSchedule,
   daysUntilDeadline,
   getProjectProgress,
   getProjectStatus,
@@ -54,10 +55,19 @@ export default function ProjectDashboard({ project, settings, milestones }) {
   const status = getProjectStatus(daysLeft);
 
   const completedMilestones = milestones.filter((m) => m.completed).length;
-  const upcomingMilestones = milestones
+  const milestoneSchedule = calculateMilestoneSchedule(
+    project.startDate,
+    milestones,
+    holidays,
+    settings.includeWeekends
+  );
+
+  const upcomingMilestones = milestoneSchedule.scheduledMilestones
     .filter((m) => !m.completed)
-    .sort((a, b) => new Date(a.date) - new Date(b.date))
+    .sort((a, b) => new Date(a.scheduledEnd) - new Date(b.scheduledEnd))
     .slice(0, 3);
+
+  const criticalMilestones = milestoneSchedule.scheduledMilestones.filter((m) => m.isCritical).length;
 
   const velocity = project.teamSize > 0
     ? Math.round((baseWorkingDays * 8) / project.teamSize)
@@ -155,6 +165,14 @@ export default function ProjectDashboard({ project, settings, milestones }) {
             <div className="stat-label">Hours per Member</div>
           </div>
         )}
+
+        {milestones.length > 0 && (
+          <div className="stat-card stat-purple">
+            <div className="stat-icon">🧭</div>
+            <div className="stat-value">{criticalMilestones}</div>
+            <div className="stat-label">Critical Path Milestones</div>
+          </div>
+        )}
       </div>
 
       {/* Milestones Summary */}
@@ -179,14 +197,16 @@ export default function ProjectDashboard({ project, settings, milestones }) {
             <div className="upcoming-milestones">
               <h4 className="upcoming-title">Upcoming</h4>
               {upcomingMilestones.map((m) => {
-                const d = new Date(m.date);
+                const d = new Date(m.scheduledEnd);
                 const today = new Date();
                 today.setHours(0, 0, 0, 0);
                 const dLeft = Math.ceil((d - today) / (1000 * 60 * 60 * 24));
                 return (
                   <div key={m.id} className="upcoming-item">
                     <span className="upcoming-icon">{m.icon}</span>
-                    <span className="upcoming-name">{m.name}</span>
+                    <span className="upcoming-name">
+                      {m.name}{m.isCritical ? ' • CP' : ''}
+                    </span>
                     <span className={`upcoming-days ${dLeft <= 7 ? 'urgent' : ''}`}>
                       {dLeft < 0 ? `${Math.abs(dLeft)}d ago` : dLeft === 0 ? 'Today!' : `in ${dLeft}d`}
                     </span>
