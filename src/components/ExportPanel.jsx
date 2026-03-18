@@ -1,5 +1,6 @@
 import {
   countWorkingDays,
+  calculateMilestoneSchedule,
   getTotalCalendarDays,
   formatDateDisplay,
   applyBuffer,
@@ -32,6 +33,13 @@ function generateTextReport(project, settings, milestones) {
   const sprints = settings.sprintMode
     ? calculateSprints(project.startDate, project.endDate, settings.sprintLength || 10, holidays)
     : [];
+
+  const milestoneSchedule = calculateMilestoneSchedule(
+    project.startDate,
+    milestones,
+    holidays,
+    settings.includeWeekends
+  );
 
   const lines = [
     '═══════════════════════════════════════════════════════════════',
@@ -71,13 +79,22 @@ function generateTextReport(project, settings, milestones) {
       '  MILESTONES',
       '───────────────────────────────────────────────────────────────'
     );
-    [...milestones]
-      .sort((a, b) => new Date(a.date) - new Date(b.date))
+    milestoneSchedule.scheduledMilestones
       .forEach((m) => {
         const status = m.completed ? '[✓]' : '[ ]';
-        lines.push(`  ${status} ${m.date}  ${m.icon} ${m.name}`);
+        const critical = m.isCritical ? ' [CP]' : '';
+        lines.push(`  ${status} ${m.scheduledStart} → ${m.scheduledEnd}  ${m.icon} ${m.name}${critical}`);
+        lines.push(`        Duration: ${m.durationDays} working day(s)`);
+        if ((m.dependsOn || []).length > 0) {
+          lines.push(`        Dependencies: ${m.dependsOn.join(', ')}`);
+        }
         if (m.description) lines.push(`        → ${m.description}`);
       });
+    if (milestoneSchedule.hasCycle) {
+      lines.push('  ⚠ Dependency cycle detected; critical path may be incomplete.');
+    } else {
+      lines.push(`  Critical Path Milestones: ${milestoneSchedule.criticalPathIds.length}`);
+    }
     lines.push('');
   }
 
@@ -149,10 +166,21 @@ export default function ExportPanel({ project, settings, milestones }) {
       ['US Holidays', settings.useUSHolidays ? 'Yes' : 'No'],
       ['Sprint Mode', settings.sprintMode ? 'Yes' : 'No'],
       settings.sprintMode ? ['Sprint Length', settings.sprintLength] : null,
+      ['Dependency Cycle', milestoneSchedule.hasCycle ? 'Yes' : 'No'],
+      ['Critical Path Milestones', milestoneSchedule.criticalPathIds.length],
       [],
       ['Milestones'],
-      ['Name', 'Date', 'Status', 'Description'],
-      ...milestones.map((m) => [m.name, m.date, m.completed ? 'Completed' : 'Pending', m.description || '']),
+      ['Name', 'Scheduled Start', 'Scheduled End', 'Duration', 'Critical Path', 'Dependencies', 'Status', 'Description'],
+      ...milestoneSchedule.scheduledMilestones.map((m) => [
+        m.name,
+        m.scheduledStart,
+        m.scheduledEnd,
+        m.durationDays,
+        m.isCritical ? 'Yes' : 'No',
+        (m.dependsOn || []).join('|'),
+        m.completed ? 'Completed' : 'Pending',
+        m.description || '',
+      ]),
     ].filter(Boolean);
 
     const csv = rows.map((row) => row.map((cell) => `"${cell}"`).join(',')).join('\n');
